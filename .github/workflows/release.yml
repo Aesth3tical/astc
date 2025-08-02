@@ -1,0 +1,67 @@
+name: Auto Version & Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Automated Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ✅ Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: 🔢 Bump Version
+        id: bump
+        run: |
+          if [ ! -f version.txt ]; then
+            echo "1.0.0" > version.txt
+          fi
+          VERSION=$(cat version.txt)
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          NEW_VERSION="$MAJOR.$MINOR.$((PATCH+1))"
+          echo "$NEW_VERSION" > version.txt
+          echo "version=$NEW_VERSION" >> $GITHUB_ENV
+          echo "Bumped version to $NEW_VERSION"
+
+      - name: 📦 Commit Updated Version
+        run: |
+          git add version.txt
+          git commit -m "🔖 Bump version to ${{ env.version }}" || echo "No changes to commit"
+          git push
+
+      - name: 🏷️ Create Git Tag
+        run: |
+          git tag "v${{ env.version }}"
+          git push origin "v${{ env.version }}"
+
+      - name: 🏷️ Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ env.version }}"
+          name: "ASTC v${{ env.version }}"
+          body: |
+            🚀 **ASTC v${{ env.version}} Released!**
+
+            ### Changes:
+            - Automated release triggered by push to `main`
+            - Latest ASTC script and changelog included
+          draft: false
+          prerelease: false
+          files: |
+            astc
+            changelog.md
+            version.txt

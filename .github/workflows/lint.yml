@@ -1,0 +1,31 @@
+name: Lint & Syntax Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  shellcheck:
+    name: Shell Script Lint & Syntax Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ✅ Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🛠️ Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: 🔍 Run ShellCheck Linter
+        run: |
+          echo "Running ShellCheck on ASTC script..."
+          shellcheck astc || true
+
+      - name: 🔎 Bash Syntax Check
+        run: |
+          echo "Checking for syntax errors..."
+          bash -n astc

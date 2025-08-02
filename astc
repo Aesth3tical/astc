@@ -1,0 +1,146 @@
+#!/bin/bash
+
+### CONFIG ###
+SITES_ENABLED="/etc/nginx/sites-enabled"
+ASTC_DIR="/etc/astc"
+DOMAIN_FILE="$ASTC_DIR/sites.txt"
+CHANGELOG_FILE="$ASTC_DIR/changelog.md"
+VERSION_FILE="$ASTC_DIR/version.txt"
+ASTC_SCRIPT="/usr/local/bin/astc"
+REMOTE_REPO="https://raw.githubusercontent.com/Aesth3tical/astc/main/astc"
+REMOTE_CHANGELOG="https://raw.githubusercontent.com/Aesth3tical/astc/main/changelog.md"
+REMOTE_VERSION="https://raw.githubusercontent.com/Aesth3tical/astc/main/version.txt"
+PUB_IP=$(curl -s4 ifconfig.io)
+
+### COLORS ###
+BLUE="\033[1;34m"
+YELLOW="\033[1;33m"
+GREEN="\033[1;32m"
+RED="\033[1;31m"
+GRAY="\033[0;90m"
+RESET="\033[0m"
+
+### HELP MENU ###
+print_help() {
+    LOCAL_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "0")
+
+    echo -e "\n${BLUE}─────────────────────────────────────────────${RESET}"
+    echo -e "   \033[1;37mASTC (Add Site To Config) | ${LOCAL_VER}\033[0m"
+    echo -e "   ${GRAY}Automated Nginx/DNS/SSL Management Tool${RESET}"
+    echo -e "${BLUE}─────────────────────────────────────────────${RESET}\n"
+    echo -e "${YELLOW}Usage:${RESET}"
+    echo -e "  astc [COMMAND] [OPTIONS]\n"
+    echo -e "${YELLOW}Commands:${RESET}"
+    echo -e "  ${GREEN}--add${RESET}       -d domain.com -p PORT      Add site to Nginx & SSL"
+    echo -e "  ${GREEN}--rem${RESET}       -d domain.com               Remove site configuration"
+    echo -e "  ${GREEN}--ls${RESET}                                     List all enabled sites"
+    echo -e "  ${GREEN}--renew-all${RESET}                               Renew SSL for all domains"
+    echo -e "  ${GREEN}--check-dns${RESET} -d domain.com                Validate DNS for this server"
+    echo -e "  ${GREEN}--fix-ssl${RESET}   -d domain.com                Force reissue SSL certificate"
+    echo -e "  ${GREEN}--update${RESET}                                 Update ASTC to latest version"
+    echo -e "  ${GREEN}--changelog${RESET}                              Show latest changes"
+    echo -e "  ${GREEN}--help${RESET}                                   Display this help menu"
+    echo -e "${BLUE}─────────────────────────────────────────────${RESET}\n"
+}
+
+### AUTO-POPULATE DOMAIN LIST ###
+sync_domains() {
+    mkdir -p "$ASTC_DIR"
+    grep -h "server_name" $SITES_ENABLED/* 2>/dev/null \
+        | awk '{for (i=2;i<=NF;i++) print $i}' \
+        | sed 's/;//' \
+        | grep -Ev '^\$|301|https?://|\*|default' \
+        | grep -E '^[A-Za-z0-9._-]+$' \
+        | sort -u > "$DOMAIN_FILE"
+}
+
+### AUTO-UPDATE CHECK ###
+auto_update_check() {
+    mkdir -p "$ASTC_DIR"
+    LAST_CHECK="$ASTC_DIR/last_update_check"
+    if [[ -f "$LAST_CHECK" && $(($(date +%s) - $(stat -c %Y "$LAST_CHECK"))) -lt 86400 ]]; then
+        return
+    fi
+    touch "$LAST_CHECK"
+
+    REMOTE_VER=$(curl -s "$REMOTE_VERSION")
+    LOCAL_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "0")
+
+    if [[ "$REMOTE_VER" != "$LOCAL_VER" && -n "$REMOTE_VER" ]]; then
+        echo -e "${YELLOW}[INFO] New ASTC version available ($REMOTE_VER). Run: astc --update${RESET}"
+    fi
+}
+
+### COMMANDS ###
+case "$1" in
+
+    --ls)
+        echo -e "${BLUE}[ASTC]${RESET} Listing enabled sites:"
+        echo -e "${BLUE}─────────────────────────────────────────────${RESET}"
+        printf "${YELLOW}%-30s %-10s${RESET}\n" "Domain" "Port"
+        echo -e "${BLUE}─────────────────────────────────────────────${RESET}"
+        for site in $SITES_ENABLED/*; do
+            [ -f "$site" ] || continue
+            dom=$(basename "$site")
+            port=$(grep -oP 'proxy_pass http://[^:]+:\K[0-9]+' "$site")
+            [ -z "$port" ] && port="N/A"
+            printf "%-30s %-10s\n" "$dom" "$port"
+        done
+        echo -e "${BLUE}─────────────────────────────────────────────${RESET}"
+        ;;
+
+    --changelog)
+        echo -e "${BLUE}[ASTC]${RESET} Displaying latest changelog:\n"
+        if [[ -f "$CHANGELOG_FILE" ]]; then
+            cat "$CHANGELOG_FILE"
+        else
+            curl -s "$REMOTE_CHANGELOG" || echo "[!] No changelog found."
+        fi
+        ;;
+
+    --update)
+        echo -e "${BLUE}[ASTC]${RESET} Updating ASTC to latest version..."
+        if curl -fsSL "$REMOTE_REPO" -o "$ASTC_SCRIPT"; then
+            chmod +x "$ASTC_SCRIPT"
+            curl -fsSL "$REMOTE_CHANGELOG" -o "$CHANGELOG_FILE"
+            curl -fsSL "$REMOTE_VERSION" -o "$VERSION_FILE"
+            echo -e "${GREEN}[SUCCESS] ASTC updated successfully.${RESET}"
+        else
+            echo -e "${RED}[ERROR] Update failed. Check your internet connection.${RESET}"
+        fi
+        ;;
+
+    --fix-ssl)
+        shift
+        if [[ "$1" == "-d" && -n "$2" ]]; then
+            DOMAIN=$2
+            echo -e "${BLUE}[ASTC]${RESET} Fixing SSL for $DOMAIN..."
+
+            # Revoke and delete old certificate
+            if certbot certificates | grep -q "$DOMAIN"; then
+                certbot delete --cert-name "$DOMAIN" -n >/dev/null 2>&1
+                echo -e "${YELLOW}[INFO] Old certificate deleted for $DOMAIN.${RESET}"
+            fi
+
+            # Reissue SSL certificate
+            if certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"; then
+                echo -e "${GREEN}[SUCCESS] SSL reissued successfully for $DOMAIN.${RESET}"
+            else
+                echo -e "${RED}[ERROR] Failed to reissue SSL for $DOMAIN. Rolling back...${RESET}"
+                nginx -t && systemctl reload nginx
+            fi
+        else
+            echo -e "${RED}[ERROR] Usage: astc --fix-ssl -d domain.com${RESET}"
+        fi
+        ;;
+
+    --help|"")
+        print_help
+        ;;
+
+    *)
+        echo -e "${RED}[ERROR]${RESET} Unknown command. Use: astc --help"
+        ;;
+esac
+
+auto_update_check
