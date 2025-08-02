@@ -2,6 +2,7 @@
 
 ### CONFIG ###
 SITES_ENABLED="/etc/nginx/sites-enabled"
+SITES_AVAILABLE="/etc/nginx/sites-available"
 ASTC_DIR="/etc/astc"
 DOMAIN_FILE="$ASTC_DIR/sites.txt"
 CHANGELOG_FILE="$ASTC_DIR/changelog.md"
@@ -74,6 +75,63 @@ auto_update_check() {
 ### COMMANDS ###
 case "$1" in
 
+    --add)
+        shift
+        while [[ "$#" -gt 0 ]]; do
+            case "$1" in
+                -d) DOMAIN="$2"; shift ;;
+                -p) PORT="$2"; shift ;;
+            esac
+            shift
+        done
+
+        if [[ -z "$DOMAIN" || -z "$PORT" ]]; then
+            echo -e "${RED}[ERROR] Usage: astc --add -d domain.com -p PORT${RESET}"
+            exit 1
+        fi
+
+        CONFIG_FILE="$SITES_AVAILABLE/$DOMAIN.conf"
+        echo -e "${BLUE}[ASTC]${RESET} Creating Nginx config for $DOMAIN → $PORT"
+        cat > "$CONFIG_FILE" <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN www.$DOMAIN;
+    location / {
+        proxy_pass http://$PUB_IP:$PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+        ln -s "$CONFIG_FILE" "$SITES_ENABLED/" 2>/dev/null
+        nginx -t && systemctl reload nginx
+
+        echo -e "${BLUE}[ASTC]${RESET} Requesting SSL certificate..."
+        if certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"; then
+            echo -e "${GREEN}[SUCCESS] Site added and secured: $DOMAIN${RESET}"
+        else
+            echo -e "${RED}[ERROR] SSL setup failed. Rolling back.${RESET}"
+            rm -f "$SITES_ENABLED/$DOMAIN.conf" "$CONFIG_FILE"
+            nginx -t && systemctl reload nginx
+        fi
+        ;;
+
+    --rem)
+        shift
+        if [[ "$1" == "-d" && -n "$2" ]]; then
+            DOMAIN=$2
+            echo -e "${BLUE}[ASTC]${RESET} Removing site $DOMAIN..."
+            rm -f "$SITES_ENABLED/$DOMAIN.conf" "$SITES_AVAILABLE/$DOMAIN.conf"
+            nginx -t && systemctl reload nginx
+            echo -e "${GREEN}[SUCCESS] Site removed: $DOMAIN${RESET}"
+        else
+            echo -e "${RED}[ERROR] Usage: astc --rem -d domain.com${RESET}"
+        fi
+        ;;
+
     --ls)
         echo -e "${BLUE}[ASTC]${RESET} Listing enabled sites:"
         echo -e "${BLUE}─────────────────────────────────────────────${RESET}"
@@ -115,14 +173,10 @@ case "$1" in
         if [[ "$1" == "-d" && -n "$2" ]]; then
             DOMAIN=$2
             echo -e "${BLUE}[ASTC]${RESET} Fixing SSL for $DOMAIN..."
-
-            # Revoke and delete old certificate
             if certbot certificates | grep -q "$DOMAIN"; then
                 certbot delete --cert-name "$DOMAIN" -n >/dev/null 2>&1
                 echo -e "${YELLOW}[INFO] Old certificate deleted for $DOMAIN.${RESET}"
             fi
-
-            # Reissue SSL certificate
             if certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN"; then
                 echo -e "${GREEN}[SUCCESS] SSL reissued successfully for $DOMAIN.${RESET}"
             else
