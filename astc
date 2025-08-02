@@ -74,7 +74,7 @@ auto_update_check() {
 
 ### COMMANDS ###
 case "$1" in
-        --add)
+    --add)
         shift
         while [[ "$#" -gt 0 ]]; do
             case "$1" in
@@ -118,7 +118,7 @@ EOF
 
         echo -e "${BLUE}[ASTC]${RESET} Requesting SSL certificate..."
         if [[ -n "$EXTRA_DOMAIN" ]]; then
-            certbot --nginx -d "$DOMAIN" -d "$EXTRA_DOMAIN"
+            certbot --nginx --cert-name "$DOMAIN" -d "$DOMAIN" ${EXTRA_DOMAIN:+-d "$EXTRA_DOMAIN"}
         else
             certbot --nginx -d "$DOMAIN"
         fi
